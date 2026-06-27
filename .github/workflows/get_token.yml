@@ -7,62 +7,62 @@ on:
     - cron: '0 2 * * *'
 
 jobs:
-  crawl:
+  crawl_token:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Setup Python
+      - name: 安装Python3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install playwright
+      - name: 安装Playwright浏览器依赖
         run: |
           pip install --upgrade pip
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: Run crawl script
+      - name: 抓取Token并写入文件
+        id: crawl
         run: |
-          cat > crawl.py << 'END_SCRIPT'
+          python3 -c "
 from playwright.sync_api import sync_playwright
 import re
-def main():
+def run():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page(user_agent="Mozilla/5.0 Chrome/120")
-        page.goto("https://taoiptv.com/#", timeout=40000, wait_until="networkidle")
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(user_agent='Mozilla/5.0 Chrome/120')
+        page.goto('https://taoiptv.com/#', timeout=40000, wait_until='networkidle')
         page.wait_for_timeout(5000)
-        page.click("span:has-text('获取Token')")
+        page.click('span:has-text(\"获取Token\")')
         page.wait_for_timeout(3000)
         html = page.content()
         browser.close()
-        res = re.search(r'token=([a-zA-Z0-9]{16})', html)
-        if not res:
-            raise Exception("Token not found")
-        token = res.group(1)
-        with open("token.txt", "w", encoding="utf-8") as f:
+        match = re.search(r'token=([a-zA-Z0-9]{16})', html)
+        if not match:
+            raise Exception('未匹配到16位Token')
+        token = match.group(1)
+        with open('token.txt', 'w', encoding='utf-8') as f:
             f.write(token)
-        print(f"TOKEN={token}")
-if __name__ == "__main__":
-    main()
-END_SCRIPT
-          python crawl.py >> $GITHUB_ENV
+        print(f'TOKEN={token}')
+if __name__ == '__main__':
+    run()
+          " >> $GITHUB_ENV
 
-      - name: Git config
+      - name: 配置Git提交身份
         run: |
-          git config --global user.name "TokenBot"
+          git config --global user.name "AutoTokenBot"
           git config --global user.email "bot@github.com"
 
-      - name: Commit token file
+      - name: 提交更新token.txt到仓库
         run: |
           git add token.txt
           if git diff --cached --quiet; then
-            echo "No change, skip commit"
+            echo "Token无变化，跳过提交"
           else
-            git commit -m "Auto update token ${{ env.TOKEN }}"
+            git commit -m "自动更新Token: ${{ env.TOKEN }}"
             git push origin main
