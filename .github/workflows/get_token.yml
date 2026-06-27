@@ -1,4 +1,84 @@
-      - name: 提取Token并写入文件
-        id: 爬取
+name: Auto Get Token
+# 触发规则：推送代码、手动点击运行、每日定时刷新
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  get_token_job:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 拉取仓库代码，授予读写权限
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      # 2. 安装Python环境
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. 安装爬虫依赖Playwright
+      - name: Install Playwright
         run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          playwright install chromium --with-deps
+
+      # 4. 独立运行爬虫（分离脚本，彻底规避YAML引号换行报错）
+      - name: Run Crawl Script
+        id: crawl_task
+        run: |
+          # 生成独立爬虫文件，不在yml内嵌大量代码
+          cat > crawl.py << 'SCRIPT_END'
+from playwright.sync_api import sync_playwright
+import re
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page(user_agent="Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0")
+        page.goto("https://taoiptv.com/#", timeout=40000, wait_until="networkidle")
+        page.wait_for_timeout(5000)
+        page.click("span:has-text('获取Token')")
+        page.wait_for_timeout(3000)
+        page_html = page.content()
+        browser.close()
+        # 匹配16位Token
+        token_match = re.search(r'token=([a-zA-Z0-9]{16})', page_html)
+        if not token_match:
+            raise Exception("页面未捕获到16位Token")
+        token_str = token_match.group(1)
+        # 写入仓库根目录token.txt
+        with open("token.txt", "w", encoding="utf-8") as f:
+            f.write(token_str)
+        # 输出Token到环境变量
+        print(f"TOKEN_VALUE={token_str}")
+
+if __name__ == "__main__":
+    main()
+SCRIPT_END
+          # 执行爬虫脚本
           python3 crawl.py >> $GITHUB_ENV
+
+      # 5. 配置Git提交信息
+      - name: Set Git User Info
+        run: |
+          git config --global user.name "TokenAutoBot"
+          git config --global user.email "bot@github.com"
+
+      # 6. 提交更新token.txt文件回仓库
+      - name: Commit & Push Token File
+        run: |
+          git add token.txt
+          # 无变更则跳过提交，避免空提交报错
+          if git diff --cached --quiet; then
+            echo "Token无更新，无需推送"
+          else
+            git commit -m "自动刷新Token: ${{ env.TOKEN_VALUE }}"
+            git push origin main
