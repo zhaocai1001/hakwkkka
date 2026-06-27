@@ -5,58 +5,36 @@ on:
   workflow_dispatch:
 
 jobs:
-  crawl:
+  crawl_token:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Setup Python
+      - name: 安装Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Deps
-        run: |
+      - name: 安装依赖
+        run:
           pip install --upgrade pip
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: Crawl Token
-        id: get_tk
-        run: python3 -c "
-from playwright.sync_api import sync_playwright
-import re
-p = sync_playwright().start()
-browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
-page = browser.new_page(user_agent='Mozilla/5.0 Chrome/120')
-page.goto('https://taoiptv.com/#', timeout=40000, wait_until='networkidle')
-page.wait_for_timeout(5000)
-page.click('span:has-text(\"获取Token\")')
-page.wait_for_timeout(3000)
-html = page.content()
-browser.close()
-p.stop()
-m = re.search(r'token=([a-zA-Z0-9]{16})', html)
-if not m:
-    raise Exception('Token Not Found')
-tk = m.group(1)
-open('token.txt','w',encoding='utf-8').write(tk)
-print(f'TOKEN={tk}')
-        " >> $GITHUB_ENV
+      - name: 抓取Token
+        id: crawl
+        run:
+          python3 -c 'import re;from playwright.sync_api import sync_playwright;p=sync_playwright().start();br=p.chromium.launch(headless=True,args=["--no-sandbox"]);pg=br.new_page(user_agent="Mozilla/5.0 Chrome/120");pg.goto("https://taoiptv.com/#",timeout=40000,wait_until="networkidle");pg.wait_for_timeout(5000);pg.click("span:has-text(\"获取Token\")");pg.wait_for_timeout(3000);html=pg.content();br.close();p.stop();m=re.search(r"token=([a-zA-Z0-9]{16})",html);tk=m.group(1);open("token.txt","w",encoding="utf-8").write(tk);print("TOKEN="+tk)' >> $GITHUB_ENV
 
-      - name: Git Config
-        run: |
-          git config --global user.name "Bot"
+      - name: 配置Git用户
+        run:
+          git config --global user.name "TokenBot"
           git config --global user.email "bot@github.com"
 
-      - name: Push File
-        run: |
+      - name: 提交更新文件
+        run:
           git add token.txt
-          if git diff --cached --quiet; then
-            echo "No change"
-          else
-            git commit -m "Update token ${{ env.TOKEN }}"
-            git push
+          if git diff --cached --quiet; then echo "无变更跳过"; else git commit -m "更新Token ${{ env.TOKEN }}"; git push; fi
