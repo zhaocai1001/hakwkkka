@@ -10,29 +10,28 @@ jobs:
   crawl:
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取仓库代码
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: true
 
-      - name: 安装Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 安装Playwright
+      - name: Install playwright
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: 抓取Token
+      - name: Run crawl script
         run: |
-          cat > crawl.py << 'PYEOF'
+          cat > crawl.py << 'END_SCRIPT'
 from playwright.sync_api import sync_playwright
 import re
-def get_token():
+def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page(user_agent="Mozilla/5.0 Chrome/120")
@@ -42,28 +41,28 @@ def get_token():
         page.wait_for_timeout(3000)
         html = page.content()
         browser.close()
-        match = re.search(r'token=([a-zA-Z0-9]{16})', html)
-        if not match:
-            raise Exception("未匹配到Token")
-        token = match.group(1)
+        res = re.search(r'token=([a-zA-Z0-9]{16})', html)
+        if not res:
+            raise Exception("Token not found")
+        token = res.group(1)
         with open("token.txt", "w", encoding="utf-8") as f:
             f.write(token)
         print(f"TOKEN={token}")
 if __name__ == "__main__":
-    get_token()
-PYEOF
+    main()
+END_SCRIPT
           python crawl.py >> $GITHUB_ENV
 
-      - name: 配置Git用户
+      - name: Git config
         run: |
-          git config --global user.name "AutoBot"
+          git config --global user.name "TokenBot"
           git config --global user.email "bot@github.com"
 
-      - name: 提交更新文件
+      - name: Commit token file
         run: |
           git add token.txt
           if git diff --cached --quiet; then
-            echo "无更新跳过提交"
+            echo "No change, skip commit"
           else
-            git commit -m "Auto update token: ${{ env.TOKEN }}"
-            git push
+            git commit -m "Auto update token ${{ env.TOKEN }}"
+            git push origin main
