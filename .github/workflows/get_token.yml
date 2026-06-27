@@ -1,0 +1,68 @@
+name: Auto Fetch Token
+# 支持手动触发 + 定时每日自动更新
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取仓库代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true # 允许action提交文件回仓库
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: 运行爬虫获取Token
+        id: crawl
+        run: |
+          cat > run.py << 'PYEOF'
+from playwright.sync_api import sync_playwright
+import re
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page(user_agent="Mozilla/5.0 (X11; Linux x86_64) Chrome/120")
+        page.goto("https://taoiptv.com", timeout=30000, wait_until="networkidle")
+        page.wait_for_timeout(4000)
+        page.click("span:has-text('获取Token')")
+        page.wait_for_timeout(2000)
+        html = page.content()
+        browser.close()
+
+        match = re.search(r'token=([a-zA-Z0-9]{16})', html)
+        if not match:
+            raise Exception("未找到16位Token")
+        token = match.group(1)
+        print(f"TOKEN={token}")
+        # 写入仓库根目录token.txt
+        with open("token.txt", "w", encoding="utf-8") as f:
+            f.write(token)
+
+if __name__ == "__main__":
+    main()
+PYEOF
+          python run.py >> $GITHUB_ENV
+
+      - name: 配置Git提交信息
+        run: |
+          git config --global user.name "Action Bot"
+          git config --global user.email "bot@github.com"
+
+      - name: 提交并推送token.txt到仓库
+        run: |
+          git add token.txt
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto update token ${{ env.TOKEN }}"
+          git push
