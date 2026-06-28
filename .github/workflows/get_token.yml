@@ -1,71 +1,100 @@
 name: Get TaoIPTV Token
 
-# 触发条件：支持手动触发，或者每隔 6 小时自动运行一次
 on:
-  workflow_dispatch: # 支持在 GitHub 页面上手动点击运行
+  workflow_dispatch: # 支持手动运行
   schedule:
-    - cron: '0 */6 * * *' # 定时任务（UTC 时间），每 6 小时执行一次
+    - cron: '0 */6 * * *' # 每 6 小时自动运行一次
+
+# 赋予 Actions 写入仓库和提交代码的权限
+permissions:
+  contents: write
 
 jobs:
-  fetch-token:
+  fetch-and-save-token:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 检出仓库代码
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 2. 设置 Python 环境
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    # 3. 安装依赖（Playwright 浏览器自动化工具）
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install playwright
 
-    # 4. 安装 Playwright 所需的 Chromium 浏览器内核
-    - name: Install Playwright Webkit/Chromium
+    - name: Install Playwright Chromium
       run: |
         playwright install chromium --with-deps
 
-    # 5. 运行 Python 脚本模拟点击并获取 Token
     - name: Run script to get Token
       run: |
         python - <<EOF
         import asyncio
+        import re
         from playwright.async_api import async_playwright
 
         async def main():
             async with async_playwright() as p:
-                # 启动无头浏览器
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
                 
-                # 访问目标网站
-                print("正在打开网页...")
-                await page.goto("https://taoiptv.com", wait_until="networkidle")
+                print("正在打开网页（优化等待策略）...")
+                # 放弃 networkidle，改用 domcontentloaded 绕过卡网络资源的静态文件
+                await page.goto("https://taoiptv.com/", wait_until="domcontentloaded", timeout=60000)
                 
-                # 等待“获取ToKen”文本或按钮出现并点击
-                # 这里使用文字匹配定位，如果网站结构改变，可能需要更换为 CSS 选择器
-                print("正在寻找并点击 '获取ToKen'...")
+                # 额外显式等待关键的“获取ToKen”按钮出现，最多等 15 秒
+                print("等待 '获取ToKen' 按钮加载...")
+                try:
+                    await page.wait_for_selector("text=获取ToKen", timeout=15000)
+                except Exception as e:
+                    print("警告: 未在指定时间内捕获到文字，尝试直接点击。")
+                
+                print("正在点击 '获取ToKen'...")
                 await page.click("text=获取ToKen")
                 
-                # 给予页面一定的加载或弹窗响应时间
-                await page.wait_for_timeout(3000)
+                # 留出 5 秒让页面生成并显示 Token
+                await page.wait_for_timeout(5000)
                 
-                # 打印点击后的页面文本或截图（方便在日志中查看 Token）
-                content = await page.content()
-                print("--- 页面内容获取成功 ---")
-                
-                # 提取并打印屏幕上的文本
+                # 提取页面全部文本
                 body_text = await page.locator("body").inner_text()
+                print("--- 页面内容提取成功 ---")
                 print(body_text)
+                
+                # 【保存到本地文件：token.txt】
+                # 你可以根据实际日志打印出来的文本，用正则表达式或截取方式提炼出纯 Token
+                # 这里先将点击后包含 Token 的完整文本保存下来
+                with open("token.txt", "w", encoding="utf-8") as f:
+                    f.write(body_text)
+                print("Token 已临时写入 token.txt 文件")
                 
                 await browser.close()
 
         asyncio.run(main())
         EOF
+
+    # 6. 将生成的 token.txt 自动提交并保存到 GitHub 仓库中
+    - name: Commit and Push changes
+      run: |
+        git config --local user.email "actions@github.com"
+        git config --local user.name "GitHub Actions"
+        
+        # 检查 token.txt 是否真的有内容变化，如果有则提交
+        if [ -f "token.txt" ]; then
+          git add token.txt
+          # 检查是否有内容变更，防止无意义的报错
+          if ! git diff-index --quiet HEAD --; then
+            git commit -m "🤖 自动化更新 TaoIPTV Token"
+            git push origin main
+            print("Token 文件已成功推送到仓库！")
+          else
+            echo "Token 内容无变化，无需提交。"
+          fi
+        else
+          echo "错误: 未找到 token.txt 文件"
+          exit 1
+        fi
