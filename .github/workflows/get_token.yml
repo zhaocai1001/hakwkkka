@@ -1,39 +1,71 @@
-name: Auto Fetch Token
+name: Get TaoIPTV Token
+
+# 触发条件：支持手动触发，或者每隔 6 小时自动运行一次
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # 支持在 GitHub 页面上手动点击运行
+  schedule:
+    - cron: '0 */6 * * *' # 定时任务（UTC 时间），每 6 小时执行一次
 
 jobs:
-  crawl_token:
+  fetch-token:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
+    # 1. 检出仓库代码
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+    # 2. 设置 Python 环境
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install playwright
-          playwright install chromium --with-deps
+    # 3. 安装依赖（Playwright 浏览器自动化工具）
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright
 
-      - name: Fetch token
-        id: get_tk
-        run: python3 -c 'import re;from playwright.sync_api import sync_playwright;p=sync_playwright().start();br=p.chromium.launch(headless=True,args=["--no-sandbox"]);pg=br.new_page(user_agent="Mozilla/5.0 Chrome/122");pg.goto("https://taoiptv.com/#",timeout=60000,wait_until="networkidle");pg.wait_for_timeout(8000);pg.click("span:has-text(\"获取Token\")");pg.wait_for_timeout(5000);html=pg.content();br.close();p.stop();m=re.search(r"token=([a-zA-Z0-9]{16})",html);tk=m.group(1);open("token.txt","w",encoding="utf-8").write(tk);print("TOKEN="+tk)' >> $GITHUB_ENV
+    # 4. 安装 Playwright 所需的 Chromium 浏览器内核
+    - name: Install Playwright Webkit/Chromium
+      run: |
+        playwright install chromium --with-deps
 
-      - name: Git config
-        run: |
-          git config --global user.name "TokenBot"
-          git config --global user.email "bot@github.com"
+    # 5. 运行 Python 脚本模拟点击并获取 Token
+    - name: Run script to get Token
+      run: |
+        python - <<EOF
+        import asyncio
+        from playwright.async_api import async_playwright
 
-      - name: Save token file
-        run: |
-          git add token.txt
-          if git diff --cached --quiet; then echo "No change skip push"; else git commit -m "Update token ${{ env.TOKEN }}"; git push origin main; fi
+        async def main():
+            async with async_playwright() as p:
+                # 启动无头浏览器
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                
+                # 访问目标网站
+                print("正在打开网页...")
+                await page.goto("https://taoiptv.com", wait_until="networkidle")
+                
+                # 等待“获取ToKen”文本或按钮出现并点击
+                # 这里使用文字匹配定位，如果网站结构改变，可能需要更换为 CSS 选择器
+                print("正在寻找并点击 '获取ToKen'...")
+                await page.click("text=获取ToKen")
+                
+                # 给予页面一定的加载或弹窗响应时间
+                await page.wait_for_timeout(3000)
+                
+                # 打印点击后的页面文本或截图（方便在日志中查看 Token）
+                content = await page.content()
+                print("--- 页面内容获取成功 ---")
+                
+                # 提取并打印屏幕上的文本
+                body_text = await page.locator("body").inner_text()
+                print(body_text)
+                
+                await browser.close()
+
+        asyncio.run(main())
+        EOF
