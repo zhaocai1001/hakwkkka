@@ -1,11 +1,10 @@
 name: Get TaoIPTV Token
 
 on:
-  workflow_dispatch: # 支持手动触发测试
+  workflow_dispatch: # 支持在 GitHub Actions 页面上手动点击运行
   schedule:
-    - cron: '0 */6 * * *' # 每 6 小时自动运行一次
+    - cron: '0 */6 * * *' # 定时任务，每 6 小时自动运行一次
 
-# 赋予写入权限，以便将 Token 保存到仓库中
 permissions:
   contents: write
 
@@ -40,89 +39,73 @@ jobs:
 
         async def main():
             async with async_playwright() as p:
+                # 模拟大分辨率的真实电脑浏览器环境，防止菜单栏折叠
                 browser = await p.chromium.launch(headless=True)
-                
-                # 【关键核心】：赋予浏览器“读取/写入剪贴板”的系统权限，模拟真实电脑环境
                 context = await browser.new_context(
                     permissions=["clipboard-read", "clipboard-write"],
-                    viewport={"width": 1280, "height": 800}
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
                 page = await context.new_page()
                 page.set_default_timeout(45000)
                 
                 print("正在打开网页 taoiptv.com ...")
                 try:
-                    await page.goto("https://taoiptv.com", wait_until="commit")
+                    await page.goto("https://taoiptv.com/", wait_until="domcontentloaded")
                 except Exception as e:
-                    print(f"网页打开遇到小阻碍，但我们继续尝试: {e}")
+                    print(f"网页打开超时，但我们继续尝试: {e}")
                 
-                print("等待页面 JS 动态组件渲染中 (8s)...")
+                print("给予 JS 组件足够的加载时间 (8s)...")
                 await page.wait_for_timeout(8000)
                 
-                # 定位“获取ToKen”的几种可能方案
-                selectors = [
-                    "text=获取ToKen",
-                    "text=获取Token",
-                    "a:has-text('ToKen')",
-                    "a:has-text('Token')"
-                ]
+                print("【核心突破】正在直接执行底层 JS 指令来触发『获取ToKen』按钮点击...")
+                try:
+                    # 利用你提供的图片特征：左上角、文字含有 "获取ToKen" 的 <a> 标签
+                    # 直接通过评估 JS，找到这个元素并执行 .click()，绕过所有界面不可见的报错
+                    await page.evaluate("""() => {
+                        const links = Array.from(document.querySelectorAll('a'));
+                        const targetLink = links.find(el => el.textContent.includes('获取ToKen') || el.textContent.includes('获取Token'));
+                        if (targetLink) {
+                            targetLink.click();
+                            return "成功在底层触发点击事件";
+                        }
+                        return "未在页面中找到 '获取ToKen' 链接";
+                    }""")
+                    print("底层点击指令已发出。")
+                except Exception as e:
+                    print(f"执行底层点击发生异常: {e}")
                 
-                clicked = False
-                for sel in selectors:
-                    try:
-                        print(f"尝试定位并点击: {sel}")
-                        await page.click(sel, force=True, timeout=5000)
-                        print(f"成功触发点击！")
-                        clicked = True
-                        break
-                    except Exception:
-                        continue
-                
-                if not clicked:
-                    # 备用方案：利用 XPath 兜底寻找
-                    try:
-                        await page.click("//a[contains(text(), 'ToKen') or contains(text(), 'Token')]", force=True, timeout=5000)
-                        print("通过 XPath 备用方案成功点击！")
-                    except Exception as e:
-                        print("未能找到对应的点击按钮。")
-                        sys.exit(1)
-                
-                # 给予 3 秒让复制逻辑执行完毕
+                # 留出 3 秒让网站的复制到剪贴板代码执行完毕
                 await page.wait_for_timeout(3000)
                 
-                # 【读取剪贴板】：在网页上下文中执行 JS，直接把剪贴板里被复制的 Token 读出来
-                print("正在尝试从浏览器剪贴板中提取复制的 Token...")
+                # 从虚拟剪贴板读取网站刚才复制进去的 Token
+                print("正在『粘贴』：从浏览器剪贴板捕获 Token...")
                 try:
                     copied_token = await page.evaluate("async () => { return await navigator.clipboard.readText(); }")
                     copied_token = copied_token.strip()
                 except Exception as e:
-                    print(f"无法直接读取剪贴板，原因: {e}。将尝试读取网页全部内容兜底。")
+                    print(f"读取剪贴板失败 ({e})，将尝试提取整页文本兜底。")
                     copied_token = await page.locator("body").inner_text()
                 
-                # 验证提取到的内容
-                if not copied_token:
-                    print("错误：未能成功从剪贴板或页面复制到任何 Token 数据！")
+                if not copied_token or len(copied_token) < 3:
+                    print("❌ 错误：剪贴板为空，未成功获取到 Token！")
                     sys.exit(1)
                     
-                print("--- 成功截获到 Token 文本 ---")
+                print("--- 🌟 成功捕获到 Token ---")
                 print(copied_token)
                 
-                # =======================================================
-                # 【保存到指定位置】
-                # 在这里设置你要保存的文本文件名，例如默认保存到 "token.txt"
-                # =======================================================
-                target_file = "token.txt" 
-                
+                # 保存到指定的本地文件
+                target_file = "token.txt"
                 with open(target_file, "w", encoding="utf-8") as f:
                     f.write(copied_token)
-                print(f"Token 数据已安全写入到仓库的: {target_file}")
+                print(f"Token 数据已成功写入文件: {target_file}")
                 
                 await browser.close()
 
         asyncio.run(main())
         EOF
 
-    # 6. 自动执行“粘贴”并将 token.txt 提交回 GitHub 仓库
+    # 6. 将 token.txt 自动推送回你的 GitHub 仓库（等同于永久保存）
     - name: Commit and Push changes
       run: |
         git config --local user.email "actions@github.com"
@@ -133,11 +116,11 @@ jobs:
           if ! git diff-index --quiet HEAD --; then
             git commit -m "🤖 自动化同步最新 TaoIPTV Token"
             git push origin main
-            echo "Token 已成功『粘贴』并推送到仓库！"
+            echo "Token 已经成功自动粘贴并同步至仓库文件！"
           else
-            echo "Token 内容无变化，跳过本次提交。"
+            echo "Token 内容相比上一次没有变化，跳过本次提交。"
           fi
         else
-          echo "未找到生成的 token.txt 文件！"
+          echo "未找到 token.txt 文件"
           exit 1
         fi
