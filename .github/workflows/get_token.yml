@@ -1,11 +1,11 @@
 name: Get TaoIPTV Token
 
 on:
-  workflow_dispatch: # 支持手动运行
+  workflow_dispatch: # 支持手动触发测试
   schedule:
     - cron: '0 */6 * * *' # 每 6 小时自动运行一次
 
-# 赋予 Actions 写入仓库和提交代码的权限
+# 赋予写入权限，以便将 Token 保存到仓库中
 permissions:
   contents: write
 
@@ -35,66 +35,109 @@ jobs:
       run: |
         python - <<EOF
         import asyncio
-        import re
+        import sys
         from playwright.async_api import async_playwright
 
         async def main():
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
                 
-                print("正在打开网页（优化等待策略）...")
-                # 放弃 networkidle，改用 domcontentloaded 绕过卡网络资源的静态文件
-                await page.goto("https://taoiptv.com/", wait_until="domcontentloaded", timeout=60000)
+                # 【关键核心】：赋予浏览器“读取/写入剪贴板”的系统权限，模拟真实电脑环境
+                context = await browser.new_context(
+                    permissions=["clipboard-read", "clipboard-write"],
+                    viewport={"width": 1280, "height": 800}
+                )
+                page = await context.new_page()
+                page.set_default_timeout(45000)
                 
-                # 额外显式等待关键的“获取ToKen”按钮出现，最多等 15 秒
-                print("等待 '获取ToKen' 按钮加载...")
+                print("正在打开网页 taoiptv.com ...")
                 try:
-                    await page.wait_for_selector("text=获取ToKen", timeout=15000)
+                    await page.goto("https://taoiptv.com", wait_until="commit")
                 except Exception as e:
-                    print("警告: 未在指定时间内捕获到文字，尝试直接点击。")
+                    print(f"网页打开遇到小阻碍，但我们继续尝试: {e}")
                 
-                print("正在点击 '获取ToKen'...")
-                await page.click("text=获取ToKen")
+                print("等待页面 JS 动态组件渲染中 (8s)...")
+                await page.wait_for_timeout(8000)
                 
-                # 留出 5 秒让页面生成并显示 Token
-                await page.wait_for_timeout(5000)
+                # 定位“获取ToKen”的几种可能方案
+                selectors = [
+                    "text=获取ToKen",
+                    "text=获取Token",
+                    "a:has-text('ToKen')",
+                    "a:has-text('Token')"
+                ]
                 
-                # 提取页面全部文本
-                body_text = await page.locator("body").inner_text()
-                print("--- 页面内容提取成功 ---")
-                print(body_text)
+                clicked = False
+                for sel in selectors:
+                    try:
+                        print(f"尝试定位并点击: {sel}")
+                        await page.click(sel, force=True, timeout=5000)
+                        print(f"成功触发点击！")
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
                 
-                # 【保存到本地文件：token.txt】
-                # 你可以根据实际日志打印出来的文本，用正则表达式或截取方式提炼出纯 Token
-                # 这里先将点击后包含 Token 的完整文本保存下来
-                with open("token.txt", "w", encoding="utf-8") as f:
-                    f.write(body_text)
-                print("Token 已临时写入 token.txt 文件")
+                if not clicked:
+                    # 备用方案：利用 XPath 兜底寻找
+                    try:
+                        await page.click("//a[contains(text(), 'ToKen') or contains(text(), 'Token')]", force=True, timeout=5000)
+                        print("通过 XPath 备用方案成功点击！")
+                    except Exception as e:
+                        print("未能找到对应的点击按钮。")
+                        sys.exit(1)
+                
+                # 给予 3 秒让复制逻辑执行完毕
+                await page.wait_for_timeout(3000)
+                
+                # 【读取剪贴板】：在网页上下文中执行 JS，直接把剪贴板里被复制的 Token 读出来
+                print("正在尝试从浏览器剪贴板中提取复制的 Token...")
+                try:
+                    copied_token = await page.evaluate("async () => { return await navigator.clipboard.readText(); }")
+                    copied_token = copied_token.strip()
+                except Exception as e:
+                    print(f"无法直接读取剪贴板，原因: {e}。将尝试读取网页全部内容兜底。")
+                    copied_token = await page.locator("body").inner_text()
+                
+                # 验证提取到的内容
+                if not copied_token:
+                    print("错误：未能成功从剪贴板或页面复制到任何 Token 数据！")
+                    sys.exit(1)
+                    
+                print("--- 成功截获到 Token 文本 ---")
+                print(copied_token)
+                
+                # =======================================================
+                # 【保存到指定位置】
+                # 在这里设置你要保存的文本文件名，例如默认保存到 "token.txt"
+                # =======================================================
+                target_file = "token.txt" 
+                
+                with open(target_file, "w", encoding="utf-8") as f:
+                    f.write(copied_token)
+                print(f"Token 数据已安全写入到仓库的: {target_file}")
                 
                 await browser.close()
 
         asyncio.run(main())
         EOF
 
-    # 6. 将生成的 token.txt 自动提交并保存到 GitHub 仓库中
+    # 6. 自动执行“粘贴”并将 token.txt 提交回 GitHub 仓库
     - name: Commit and Push changes
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "GitHub Actions"
         
-        # 检查 token.txt 是否真的有内容变化，如果有则提交
         if [ -f "token.txt" ]; then
           git add token.txt
-          # 检查是否有内容变更，防止无意义的报错
           if ! git diff-index --quiet HEAD --; then
-            git commit -m "🤖 自动化更新 TaoIPTV Token"
+            git commit -m "🤖 自动化同步最新 TaoIPTV Token"
             git push origin main
-            print("Token 文件已成功推送到仓库！")
+            echo "Token 已成功『粘贴』并推送到仓库！"
           else
-            echo "Token 内容无变化，无需提交。"
+            echo "Token 内容无变化，跳过本次提交。"
           fi
         else
-          echo "错误: 未找到 token.txt 文件"
+          echo "未找到生成的 token.txt 文件！"
           exit 1
         fi
