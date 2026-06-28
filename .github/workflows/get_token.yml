@@ -1,9 +1,9 @@
 name: Get TaoIPTV Token
 
 on:
-  workflow_dispatch: # 支持在 GitHub Actions 页面上手动点击运行
+  workflow_dispatch: # 支持手动触发测试
   schedule:
-    - cron: '0 */6 * * *' # 定时任务，每 6 小时自动运行一次
+    - cron: '0 */6 * * *' # 每 6 小时自动运行一次
 
 permissions:
   contents: write
@@ -39,10 +39,8 @@ jobs:
 
         async def main():
             async with async_playwright() as p:
-                # 模拟大分辨率的真实电脑浏览器环境，防止菜单栏折叠
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context(
-                    permissions=["clipboard-read", "clipboard-write"],
                     viewport={"width": 1920, "height": 1080},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
@@ -58,54 +56,91 @@ jobs:
                 print("给予 JS 组件足够的加载时间 (8s)...")
                 await page.wait_for_timeout(8000)
                 
-                print("【核心突破】正在直接执行底层 JS 指令来触发『获取ToKen』按钮点击...")
+                # =======================================================
+                # 【核心绝招】：在网页底层注入监听器，直接截获网页在点击时“复制”的内容
+                # =======================================================
+                print("正在注入复制捕获拦截器...")
+                await page.evaluate("""() => {
+                    window.__capturedToken = "";
+                    // 监听全网页的 copy 事件，一旦网页调用复制，拦截它并存在全局变量里
+                    document.addEventListener('copy', (e) => {
+                        window.__capturedToken = window.getSelection().toString();
+                        // 兜底方案：如果通过选择文本拿不到，尝试从 clipboardData 拿
+                        if (e.clipboardData) {
+                            window.__capturedToken = e.clipboardData.getData('text/plain') || window.__capturedToken;
+                        }
+                    }, true);
+                }""")
+                
+                print("正在通过底层 JS 触发『获取ToKen』按钮点击...")
                 try:
-                    # 利用你提供的图片特征：左上角、文字含有 "获取ToKen" 的 <a> 标签
-                    # 直接通过评估 JS，找到这个元素并执行 .click()，绕过所有界面不可见的报错
                     await page.evaluate("""() => {
                         const links = Array.from(document.querySelectorAll('a'));
                         const targetLink = links.find(el => el.textContent.includes('获取ToKen') || el.textContent.includes('获取Token'));
                         if (targetLink) {
+                            // 主动选中它的文本触发某些复制脚本的判定（兜底）
+                            const range = document.createRange();
+                            range.selectNodeContents(targetLink);
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                            
+                            // 触发点击
                             targetLink.click();
-                            return "成功在底层触发点击事件";
+                            return "成功触发点击事件";
                         }
-                        return "未在页面中找到 '获取ToKen' 链接";
+                        return "未找到按钮";
                     }""")
-                    print("底层点击指令已发出。")
                 except Exception as e:
                     print(f"执行底层点击发生异常: {e}")
                 
-                # 留出 3 秒让网站的复制到剪贴板代码执行完毕
-                await page.wait_for_timeout(3000)
+                # 等待 4 秒让事件和可能的弹窗逻辑走完
+                await page.wait_for_timeout(4000)
                 
-                # 从虚拟剪贴板读取网站刚才复制进去的 Token
-                print("正在『粘贴』：从浏览器剪贴板捕获 Token...")
-                try:
-                    copied_token = await page.evaluate("async () => { return await navigator.clipboard.readText(); }")
-                    copied_token = copied_token.strip()
-                except Exception as e:
-                    print(f"读取剪贴板失败 ({e})，将尝试提取整页文本兜底。")
-                    copied_token = await page.locator("body").inner_text()
+                # 从我们刚才提前埋好的全局变量中，把拦截到的 Token 提取出来
+                print("正在读取捕获到的 Token 数据...")
+                captured_token = await page.evaluate("() => window.__capturedToken")
                 
-                if not copied_token or len(copied_token) < 3:
-                    print("❌ 错误：剪贴板为空，未成功获取到 Token！")
+                # 【兜底方案】：如果事件拦截没有拿到（有些网站是通过 alert 弹窗或者更改输入框值来复制的）
+                if not captured_token:
+                    print("⚠️ 事件拦截未捕获到 Token，正在启动整页扫描与输入框/弹窗兜底提取...")
+                    # 提取页面上可能动态新出现的、长得像 token 的值
+                    body_text = await page.locator("body").inner_text()
+                    
+                    # 尝试读取网页上可能存在的输入框（很多网站点击获取Token后会在输入框里显示）
+                    inputs = await page.locator("input").all_inner_texts()
+                    for inp in inputs:
+                        if inp and len(inp) > 5:
+                            captured_token = inp
+                            break
+                    
+                    if not captured_token:
+                        # 如果实在没拿到，就用整页文本作为最后防线
+                        captured_token = body_text
+
+                # 清洗多余的空格或换行
+                if captured_token:
+                    captured_token = captured_token.strip()
+                
+                if not captured_token or len(captured_token) < 3:
+                    print("❌ 错误：彻底未能获取到任何有效 Token 数据！")
                     sys.exit(1)
                     
-                print("--- 🌟 成功捕获到 Token ---")
-                print(copied_token)
+                print("--- 🌟 最终捕获到的 Token 展现 ---")
+                print(captured_token)
                 
-                # 保存到指定的本地文件
+                # 保存到本地文本文件
                 target_file = "token.txt"
                 with open(target_file, "w", encoding="utf-8") as f:
-                    f.write(copied_token)
-                print(f"Token 数据已成功写入文件: {target_file}")
+                    f.write(captured_token)
+                print(f"Token 数据已安全写入到文件: {target_file}")
                 
-                await browser.close()
+                browser.close()
 
         asyncio.run(main())
         EOF
 
-    # 6. 将 token.txt 自动推送回你的 GitHub 仓库（等同于永久保存）
+    # 6. 将 token.txt 自动推送回你的 GitHub 仓库（等同于自动保存和粘贴）
     - name: Commit and Push changes
       run: |
         git config --local user.email "actions@github.com"
